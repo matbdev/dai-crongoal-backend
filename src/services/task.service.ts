@@ -52,7 +52,16 @@ export const deleteTask = async (id: string, userId: string) => {
 export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCreateInput) => {
     const task = await prisma.task.findUnique({
         where: { id: data.taskId },
-        select: { generatedPoints: true, userId: true, projectId: true }
+        select: { 
+            generatedPoints: true, 
+            userId: true, 
+            projectId: true,
+            routineTasks: {
+                select: {
+                    routineId: true
+                }
+            }
+        }
     });
 
     if (!task) {
@@ -63,33 +72,128 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
         const register = await tx.dailyRegister.create({ data });
 
         if (data.isDone) {
-            // Award points to user
-            await tx.user.update({
-                where: { id: task.userId },
-                data: { pointsBalance: { increment: task.generatedPoints } }
-            });
+            // Check if it belongs to a project or routine
+            const isProjectTask = !!task.projectId;
+            const isRoutineTask = task.routineTasks && task.routineTasks.length > 0;
+            const isUnique = !isProjectTask && !isRoutineTask;
 
-            // Mark task as completed
-            await tx.task.update({
-                where: { id: data.taskId },
-                data: { isCompleted: true }
-            });
+            // Mark task as completed if it's not a routine task (routines reset, projects don't)
+            if (!isRoutineTask) {
+                await tx.task.update({
+                    where: { id: data.taskId },
+                    data: { isCompleted: true }
+                });
+            }
 
-            // Auto-complete project if all its tasks are now completed
-            if (task.projectId) {
+            if (isUnique) {
+                // Unique tasks give points immediately
+                await tx.user.update({
+                    where: { id: task.userId },
+                    data: { pointsBalance: { increment: task.generatedPoints } }
+                });
+            }
+
+            if (isProjectTask) {
                 const incompleteTasks = await tx.task.count({
                     where: {
                         projectId: task.projectId,
                         isCompleted: false,
-                        id: { not: data.taskId } // exclude current task (already marked above)
+                        id: { not: data.taskId } // exclude current task
                     }
                 });
 
                 if (incompleteTasks === 0) {
-                    await tx.project.update({
-                        where: { id: task.projectId },
-                        data: { isCompleted: true }
+                    // Project is completed! Sum points and check deadline
+                    const project = await tx.project.findUnique({
+                        where: { id: task.projectId! },
+                        include: { tasks: true }
                     });
+
+                    if (project) {
+                        const totalPoints = project.tasks.reduce((sum, t) => sum + t.generatedPoints, 0);
+                        const isOverdue = new Date(project.limitDate) < new Date();
+                        const awardedPoints = isOverdue ? Math.floor(totalPoints / 2) : totalPoints;
+
+                        await tx.user.update({
+                            where: { id: task.userId },
+                            data: { pointsBalance: { increment: awardedPoints } }
+                        });
+
+                        await tx.project.update({
+                            where: { id: task.projectId! },
+                            data: { isCompleted: true }
+                        });
+                    }
+                }
+            }
+
+            if (isRoutineTask) {
+                // Routine Logic: Check if all tasks in the routine are completed in the current period
+                for (const rt of task.routineTasks) {
+                    const routine = await tx.routine.findUnique({
+                        where: { id: rt.routineId },
+                        include: { routineTasks: { include: { task: true } } }
+                    });
+
+                    if (routine) {
+                        const now = new Date();
+                        let periodStart = new Date(now);
+                        
+                        switch (routine.period) {
+                            case 'DAILY':
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                            case 'WEEKLY':
+                                const day = periodStart.getDay();
+                                const diff = periodStart.getDate() - day + (day === 0 ? -6 : 1); // Monday
+                                periodStart.setDate(diff);
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                            case 'MONTHLY':
+                                periodStart.setDate(1);
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                            case 'QUARTERLY':
+                                const quarterMonth = Math.floor(periodStart.getMonth() / 3) * 3;
+                                periodStart.setMonth(quarterMonth, 1);
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                            case 'SEMIANNUAL':
+                                const halfMonth = Math.floor(periodStart.getMonth() / 6) * 6;
+                                periodStart.setMonth(halfMonth, 1);
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                            case 'ANNUAL':
+                                periodStart.setMonth(0, 1);
+                                periodStart.setHours(0, 0, 0, 0);
+                                break;
+                        }
+
+                        // Check if all tasks in routine have a register since periodStart
+                        const routineTasksIds = routine.routineTasks.map(rt => rt.taskId);
+                        
+                        const completedRegisters = await tx.dailyRegister.groupBy({
+                            by: ['taskId'],
+                            where: {
+                                taskId: { in: routineTasksIds },
+                                isDone: true,
+                                registerDate: { gte: periodStart }
+                            }
+                        });
+
+                        // Make sure the current task is considered completed even if register isn't fully committed yet
+                        const completedTaskIds = new Set(completedRegisters.map(cr => cr.taskId));
+                        completedTaskIds.add(data.taskId);
+
+                        if (completedTaskIds.size === routineTasksIds.length) {
+                            // All tasks done! Award points
+                            const totalPoints = routine.routineTasks.reduce((sum, rt) => sum + rt.task.generatedPoints, 0);
+                            await tx.user.update({
+                                where: { id: task.userId },
+                                data: { pointsBalance: { increment: totalPoints } }
+                            });
+                        }
+                    }
                 }
             }
         }
