@@ -70,6 +70,7 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
 
     return await prisma.$transaction(async (tx) => {
         const register = await tx.dailyRegister.create({ data });
+        let awardedPoints = 0;
 
         if (data.isDone) {
             // Check if it belongs to a project or routine
@@ -87,6 +88,7 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
 
             if (isUnique) {
                 // Unique tasks give points immediately
+                awardedPoints += task.generatedPoints;
                 await tx.user.update({
                     where: { id: task.userId },
                     data: { pointsBalance: { increment: task.generatedPoints } }
@@ -94,6 +96,21 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
             }
 
             if (isProjectTask) {
+                const project = await tx.project.findUnique({
+                    where: { id: task.projectId! }
+                });
+
+                if (project) {
+                    const isOverdue = new Date(project.limitDate) < new Date();
+                    const currentTaskPoints = isOverdue ? Math.floor(task.generatedPoints / 2) : task.generatedPoints;
+                    awardedPoints += currentTaskPoints;
+
+                    await tx.user.update({
+                        where: { id: task.userId },
+                        data: { pointsBalance: { increment: currentTaskPoints } }
+                    });
+                }
+
                 const incompleteTasks = await tx.task.count({
                     where: {
                         projectId: task.projectId,
@@ -103,27 +120,11 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
                 });
 
                 if (incompleteTasks === 0) {
-                    // Project is completed! Sum points and check deadline
-                    const project = await tx.project.findUnique({
+                    // Project is completed!
+                    await tx.project.update({
                         where: { id: task.projectId! },
-                        include: { tasks: true }
+                        data: { isCompleted: true }
                     });
-
-                    if (project) {
-                        const totalPoints = project.tasks.reduce((sum, t) => sum + t.generatedPoints, 0);
-                        const isOverdue = new Date(project.limitDate) < new Date();
-                        const awardedPoints = isOverdue ? Math.floor(totalPoints / 2) : totalPoints;
-
-                        await tx.user.update({
-                            where: { id: task.userId },
-                            data: { pointsBalance: { increment: awardedPoints } }
-                        });
-
-                        await tx.project.update({
-                            where: { id: task.projectId! },
-                            data: { isCompleted: true }
-                        });
-                    }
                 }
             }
 
@@ -188,6 +189,7 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
                         if (completedTaskIds.size === routineTasksIds.length) {
                             // All tasks done! Award points
                             const totalPoints = routine.routineTasks.reduce((sum, rt) => sum + rt.task.generatedPoints, 0);
+                            awardedPoints += totalPoints;
                             await tx.user.update({
                                 where: { id: task.userId },
                                 data: { pointsBalance: { increment: totalPoints } }
@@ -198,7 +200,7 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
             }
         }
 
-        return register;
+        return { register, awardedPoints };
     });
 };
 

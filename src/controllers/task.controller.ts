@@ -80,9 +80,8 @@ export const remove = async (req: Request, res: Response, next: NextFunction) =>
 // Create
 export const createDailyRegister = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const register = await TaskService.createDailyRegister(req.body);
-
-        return res.status(201).json(register);
+        const result = await TaskService.createDailyRegister(req.body);
+        return res.status(201).json(result);
     } catch (error) {
         next(error);
     };
