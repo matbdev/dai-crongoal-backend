@@ -6,8 +6,7 @@ import { AppError } from '../utils/AppError';
 // Create
 export const create = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const user = req.user as User;
-        const columnData = { ...req.body, userId: user.id };
+        const columnData = req.body;
         const column = await KanbanColumnService.createColumn(columnData);
 
         return res.status(201).json(column);
