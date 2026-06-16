@@ -82,7 +82,7 @@ export const createDailyRegister = async (data: Prisma.DailyRegisterUncheckedCre
             if (!isRoutineTask) {
                 await tx.task.update({
                     where: { id: data.taskId },
-                    data: { isCompleted: true }
+                    data: { isCompleted: true, status: 'DONE' }
                 });
             }
 

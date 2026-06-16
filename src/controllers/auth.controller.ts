@@ -27,7 +27,7 @@ export const localLogin = async (req: Request, res: Response, next: NextFunction
         return res.status(200).json({ authToken });
     } catch (error) {
         // Security treatment
-        if (error instanceof Error && error.message.includes('invalid credentials')) {
+        if (error instanceof Error && (error.message.includes('invalid credentials') || error.message.toLowerCase().includes('credenciais inválidas'))) {
             return res.status(401).json({ error: error.message });
         }
         next(error);
@@ -38,10 +38,6 @@ export const localLogin = async (req: Request, res: Response, next: NextFunction
 export const localRegister = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { email, password, fullName, displayName } = req.body;
-        console.log(email)
-        console.log(password)
-        console.log(fullName)
-        console.log(displayName)
         const authToken = await AuthService.localRegister(email, password, fullName, displayName);
 
         return res.status(201).json({ authToken });
